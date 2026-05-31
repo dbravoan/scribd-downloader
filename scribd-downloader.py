@@ -17,7 +17,7 @@ Key behaviors:
 import base64
 import os
 import re
-import shutil
+import tempfile
 import time
 from urllib.parse import unquote, urlparse
 
@@ -41,12 +41,9 @@ DEFAULT_PAPER_WIDTH_INCHES = 7.25
 DEFAULT_PAPER_HEIGHT_INCHES = 10.5
 
 
-def build_chrome_options():
+def build_chrome_options(runtime_profile_dir):
     """Create Chrome options for reliable headless PDF generation."""
     options = Options()
-    runtime_profile_dir = os.path.join(os.getcwd(), ".chrome-runtime-profile")
-    shutil.rmtree(runtime_profile_dir, ignore_errors=True)
-    os.makedirs(runtime_profile_dir, exist_ok=True)
 
     if HEADLESS_ENABLED:
         options.add_argument("--headless=new")
@@ -62,7 +59,7 @@ def build_chrome_options():
     options.add_argument("--hide-scrollbars")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
-    return options, runtime_profile_dir
+    return options
 
 
 def convert_scribd_link(url):
@@ -667,56 +664,54 @@ def main():
         print("Example: https://www.scribd.com/doc/123456789/Document-Title")
         raise SystemExit(1)
 
-    driver = None
-    runtime_profile_dir = None
+    with tempfile.TemporaryDirectory(prefix="scribd-chrome-profile-") as runtime_profile_dir:
+        driver = None
 
-    try:
-        print("\nStarting Chrome browser...")
-        options, runtime_profile_dir = build_chrome_options()
-        driver = webdriver.Chrome(options=options)
+        try:
+            print("\nStarting Chrome browser...")
+            options = build_chrome_options(runtime_profile_dir)
+            driver = webdriver.Chrome(options=options)
 
-        driver.get(converted_url)
-        time.sleep(1)
+            driver.get(converted_url)
+            time.sleep(1)
 
-        hide_cookie_dialogs(driver)
-        print("Cookie dialogs hidden.")
+            hide_cookie_dialogs(driver)
+            print("Cookie dialogs hidden.")
 
-        total_pages = scroll_through_pages(driver, DEFAULT_SCROLL_DELAY_SECONDS)
-        if total_pages == 0:
-            raise RuntimeError("No printable Scribd pages were detected on the embed page.")
+            total_pages = scroll_through_pages(driver, DEFAULT_SCROLL_DELAY_SECONDS)
+            if total_pages == 0:
+                raise RuntimeError("No printable Scribd pages were detected on the embed page.")
 
-        prepare_document_for_print(driver)
-        inject_print_styles(driver)
-        wait_for_render_stability(driver, DEFAULT_RENDER_SETTLE_TIMEOUT_SECONDS)
-        driver.execute_cdp_cmd("Emulation.setEmulatedMedia", {"media": "print"})
-        paper_size = detect_document_paper_size(driver)
+            prepare_document_for_print(driver)
+            inject_print_styles(driver)
+            wait_for_render_stability(driver, DEFAULT_RENDER_SETTLE_TIMEOUT_SECONDS)
+            driver.execute_cdp_cmd("Emulation.setEmulatedMedia", {"media": "print"})
+            paper_size = detect_document_paper_size(driver)
 
-        driver.execute_script("window.scrollTo(0, 0);")
+            driver.execute_script("window.scrollTo(0, 0);")
 
-        print(f"\nSaving PDF as: {pdf_filename}")
-        print(
-            f'  Page size: {paper_size["widthInches"]:.2f}" x '
-            f'{paper_size["heightInches"]:.2f}" '
-            f'(from {paper_size["selector"]})'
-        )
-        print("  Margins: None")
-        print("  Headers/Footers: Disabled")
-        print(f"  ChromeDriver command timeout: {DEFAULT_CDP_TIMEOUT_SECONDS}s")
+            print(f"\nSaving PDF as: {pdf_filename}")
+            print(
+                f'  Page size: {paper_size["widthInches"]:.2f}" x '
+                f'{paper_size["heightInches"]:.2f}" '
+                f'(from {paper_size["selector"]})'
+            )
+            print("  Margins: None")
+            print("  Headers/Footers: Disabled")
+            print(f"  ChromeDriver command timeout: {DEFAULT_CDP_TIMEOUT_SECONDS}s")
 
-        saved_path = save_pdf_directly(driver, pdf_filename, paper_size=paper_size)
-        if not saved_path:
-            raise RuntimeError("PDF export failed.")
+            saved_path = save_pdf_directly(driver, pdf_filename, paper_size=paper_size)
+            if not saved_path:
+                raise RuntimeError("PDF export failed.")
 
-        print(f"PDF saved successfully to: {saved_path}")
-    except (RuntimeError, WebDriverException) as error:
-        print(f"Download failed: {error}")
-        raise SystemExit(1)
-    finally:
-        if driver is not None:
-            driver.quit()
-            print("Browser closed.")
-        if runtime_profile_dir and os.path.isdir(runtime_profile_dir):
-            shutil.rmtree(runtime_profile_dir, ignore_errors=True)
+            print(f"PDF saved successfully to: {saved_path}")
+        except (RuntimeError, WebDriverException) as error:
+            print(f"Download failed: {error}")
+            raise SystemExit(1)
+        finally:
+            if driver is not None:
+                driver.quit()
+                print("Browser closed.")
 
 
 if __name__ == "__main__":

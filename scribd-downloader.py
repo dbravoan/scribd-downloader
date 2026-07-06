@@ -307,38 +307,44 @@ def prepare_document_for_print(driver):
     print(f"Adjusted {result['containers']} scroll containers for print.")
 
 
-def inject_print_styles(driver):
-    """Install conservative print CSS without hiding Scribd document content."""
+def inject_print_styles(driver, paper_size=None):
+    """Install conservative print CSS adapting dynamically to the paper dimensions."""
+    # Si no hay tamaño detectado aún, usamos un fallback temporal
+    if paper_size is None:
+        size_css = "auto"
+    else:
+        # Aseguramos que la regla CSS use el formato: ancho alto
+        is_landscape = paper_size["widthInches"] > paper_size["heightInches"]
+        if is_landscape:
+            width = max(paper_size["widthInches"], paper_size["heightInches"])
+            height = min(paper_size["widthInches"], paper_size["heightInches"])
+        else:
+            width = paper_size["widthInches"]
+            height = paper_size["heightInches"]
+        
+        size_css = f"{width}in {height}in"
+
     driver.execute_script(
-        """
+        f"""
         const existing = document.getElementById('scribd-print-styles');
-        if (existing) {
+        if (existing) {{
             existing.remove();
-        }
+        }}
 
         const style = document.createElement('style');
         style.id = 'scribd-print-styles';
         style.textContent = `
-            [class*="cookie"],
-            [class*="Cookie"],
-            [class*="consent"],
-            [class*="Consent"],
-            [class*="gdpr"],
-            [class*="privacy-notice"],
-            [class*="notice-banner"],
-            [id*="cookie"],
-            [id*="consent"],
-            [class*="osano-cm"],
-            [id*="osano"] {
+            [class*="cookie"], [class*="Cookie"], [class*="consent"], [class*="Consent"],
+            [class*="gdpr"], [class*="privacy-notice"], [class*="notice-banner"],
+            [id*="cookie"], [id*="consent"], [class*="osano-cm"], [id*="osano"] {{
                 display: none !important;
                 visibility: hidden !important;
                 opacity: 0 !important;
                 height: 0 !important;
                 overflow: hidden !important;
-            }
+            }}
 
-            [data-scribd-print-root="true"],
-            .document_scroller {
+            [data-scribd-print-root="true"], .document_scroller {{
                 position: static !important;
                 top: auto !important;
                 right: auto !important;
@@ -349,71 +355,57 @@ def inject_print_styles(driver):
                 max-height: none !important;
                 margin: 0 !important;
                 padding: 0 !important;
-            }
+            }}
 
-            @media print {
-                @page {
-                    size: 7.25in 10.5in;
+            @media print {{
+                @page {{
+                    size: {size_css}; /* <-- Inyección dinámica del tamaño real */
                     margin: 0;
-                }
+                }}
 
-                html,
-                body {
+                html, body {{
                     margin: 0 !important;
                     padding: 0 !important;
                     -webkit-print-color-adjust: exact !important;
                     print-color-adjust: exact !important;
-                }
+                }}
 
-                .toolbar_top,
-                .toolbar_bottom {
+                .toolbar_top, .toolbar_bottom {{
                     display: none !important;
-                }
+                }}
 
-                [data-scribd-print-root="true"],
-                .document_scroller {
+                [data-scribd-print-root="true"], .document_scroller {{
                     position: static !important;
-                    top: auto !important;
-                    right: auto !important;
-                    bottom: auto !important;
-                    left: auto !important;
                     overflow: visible !important;
                     height: auto !important;
                     max-height: none !important;
                     margin: 0 !important;
                     padding: 0 !important;
-                }
+                }}
 
-                .outer_page {
+                .outer_page {{
                     margin: 0 !important;
                     break-inside: avoid !important;
                     page-break-inside: avoid !important;
                     break-after: page !important;
                     page-break-after: always !important;
-                }
+                }}
 
-                .outer_page:last-of-type {
+                .outer_page:last-of-type {{
                     break-after: auto !important;
                     page-break-after: auto !important;
-                }
+                }}
 
-                mjx-container,
-                .MathJax,
-                .katex,
-                math,
-                svg {
+                mjx-container, .MathJax, .katex, math, svg {{
                     visibility: visible !important;
                     overflow: visible !important;
-                }
-            }
+                }}
+            }}
         `;
 
         document.head.appendChild(style);
         """
     )
-
-    print("Print CSS injected.")
-
 
 def wait_for_render_stability(driver, timeout_seconds):
     """
@@ -517,9 +509,11 @@ def detect_document_paper_size(driver):
     paper_size = driver.execute_script(
         """
         const candidates = [
+            '.absimg', 
+            '.outer_page img', 
+            '.text_layer',
             '.outer_page',
             '.newpage',
-            '.outer_page_container',
             "[class*='page']"
         ];
 
@@ -604,19 +598,30 @@ def save_pdf_directly(
             "widthInches": DEFAULT_PAPER_WIDTH_INCHES,
             "heightInches": DEFAULT_PAPER_HEIGHT_INCHES,
         }
+        
+    # 1. Detectamos si es landscape
+    is_landscape = paper_size["widthInches"] > paper_size["heightInches"]
 
+    # 2. Si es landscape, INTERCAMBIAMOS los valores para asegurar el formato de Chrome.
+    # Chrome printToPDF espera que si landscape=True, el paperWidth sea el lado LARGO.
+    if is_landscape:
+        width = max(paper_size["widthInches"], paper_size["heightInches"])
+        height = min(paper_size["widthInches"], paper_size["heightInches"])
+    else:
+        width = paper_size["widthInches"]
+        height = paper_size["heightInches"]
     pdf_options = {
-        "landscape": False,
+        "landscape": is_landscape,
         "displayHeaderFooter": False,
         "printBackground": True,
         "scale": 1,
-        "paperWidth": paper_size["widthInches"],
-        "paperHeight": paper_size["heightInches"],
+        "paperWidth": width,
+        "paperHeight": height,
         "marginTop": 0,
         "marginBottom": 0,
         "marginLeft": 0,
         "marginRight": 0,
-        "preferCSSPageSize": False,
+        "preferCSSPageSize": True,
     }
 
     try:
@@ -683,7 +688,8 @@ def main():
                 raise RuntimeError("No printable Scribd pages were detected on the embed page.")
 
             prepare_document_for_print(driver)
-            inject_print_styles(driver)
+            paper_size = detect_document_paper_size(driver)
+            inject_print_styles(driver, paper_size=paper_size)
             wait_for_render_stability(driver, DEFAULT_RENDER_SETTLE_TIMEOUT_SECONDS)
             driver.execute_cdp_cmd("Emulation.setEmulatedMedia", {"media": "print"})
             paper_size = detect_document_paper_size(driver)
